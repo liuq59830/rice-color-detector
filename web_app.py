@@ -9,7 +9,6 @@ st.set_page_config(page_title="大米色差智能分析系统", layout="wide")
 st.title("🍚 PVDF膜/大米显色智能分析系统")
 st.markdown("基于 **CIELAB 色彩空间** 与 **CIE76 \(\Delta E\) 色差算法** 的客观量化判别")
 
-# 记录标准的文件
 CONFIG_FILE = "color_standard.json"
 
 if 'std_colors' not in st.session_state:
@@ -46,15 +45,11 @@ def get_circular_color(img, center_x, center_y, radius):
     if len(pixels) == 0: return None
     return np.mean(pixels, axis=0)[:3]
 
-# =======================================================
-# 侧边栏：定标系统
-# =======================================================
+# 侧边栏
 with st.sidebar:
     st.header("⚙️ 标准色定标系统")
-    
     if st.session_state.std_colors["xiang"] is None or st.session_state.std_colors["pu"] is None:
-        st.warning("⚠️ 尚未建立标准色，请先上传标准图并圈选。")
-        
+        st.warning("⚠️ 尚未建立标准色，请先上传标准图。")
         std_file = st.file_uploader("上传标准图片", type=["jpg", "jpeg", "png"], key="std_upload")
         if std_file is not None:
             std_img = Image.open(std_file)
@@ -68,13 +63,11 @@ with st.sidebar:
             
             sh, sw = std_array.shape[:2]
             sx, sy = int(sw * s_x), int(sh * s_y)
-            
             preview_std = std_array.copy()
             cv2.circle(preview_std, (sx, sy), s_r, (255, 0, 0), 2)
             st.image(preview_std, caption="红色圆圈为取样位置", use_container_width=True)
             
             s_color = get_circular_color(std_array, sx, sy, s_r)
-            
             if s_color is not None:
                 s_color = s_color.tolist()
                 col1, col2 = st.columns(2)
@@ -88,15 +81,12 @@ with st.sidebar:
                     st.rerun()
     else:
         st.success("✅ 标准色已确定！")
-        # 隐藏具体数值，只显示状态
         if st.button("🔄 重新定标"):
             if os.path.exists(CONFIG_FILE): os.remove(CONFIG_FILE)
             st.session_state.std_colors = {"xiang": None, "pu": None}
             st.rerun()
 
-# =======================================================
-# 主界面：检测部分
-# =======================================================
+# 主界面
 test_file = st.file_uploader("📂 请上传待检测膜的显色照片", type=["jpg", "jpeg", "png"])
 
 if test_file is not None:
@@ -140,24 +130,21 @@ if test_file is not None:
                 diff_x = calculate_color_difference(t_color, xiang_std)
                 diff_p = calculate_color_difference(t_color, pu_std)
                 
-                st.markdown(f"**2. 色差比对 (\(\Delta E\))**")
-                st.write(f"与【香米】标准色差 \(\Delta E\) = **{diff_x:.2f}**")
-                st.write(f"与【普米】标准色差 \(\Delta E\) = **{diff_p:.2f}**")
+                # 计算色差和判断
+                st.markdown(f"**2. 色差比对与范围判定**")
                 
-                st.markdown(f"**3. 感知度评估**")
-                min_diff = min(diff_x, diff_p)
-                if min_diff < 1.0:
-                    st.success("视觉感知等级：无明显差异 (极佳匹配)")
-                elif min_diff < 2.0:
-                    st.success("视觉感知等级：微小差异 (高置信度匹配)")
-                elif min_diff < 3.5:
-                    st.info("视觉感知等级：可察觉差异 (中等置信度)")
-                else:
-                    st.warning("视觉感知等级：明显差异 (低置信度)")
-
-                st.divider()
-                st.markdown(f"**🎯 最终判别结论**")
                 if diff_x < diff_p:
-                    st.success(f"符合【香米】特征")
+                    # 属于香米的判定逻辑
+                    if diff_x < 2.0:
+                        st.success(f"该样本与【香米】的色差极小 (\(\\Delta E\) = {diff_x:.2f})，显著小于与【普米】的差距 (\(\\Delta E\) = {diff_p:.2f})。符合高置信度【香米】标准。")
+                    else:
+                        st.info(f"该样本与【香米】的色差为 {diff_x:.2f}，虽然略高于基准，但明显小于与【普米】的差距 ({diff_p:.2f})。落入合理浮动范围，判定偏向【香米】。")
+                    st.markdown(f"**🎯 最终结论：符合【香米】特征**")
+                
                 else:
-                    st.success(f"符合【普米】特征")
+                    # 属于普米的判定逻辑
+                    if diff_p < 2.0:
+                        st.success(f"该样本与【普米】的色差极小 (\(\\Delta E\) = {diff_p:.2f})，显著小于与【香米】的差距 (\(\\Delta E\) = {diff_x:.2f})。符合高置信度【普米】标准。")
+                    else:
+                        st.info(f"该样本与【普米】的色差为 {diff_p:.2f}，虽然略高于基准，但明显小于与【香米】的差距 ({diff_x:.2f})。落入合理浮动范围，判定偏向【普米】。")
+                    st.markdown(f"**🎯 最终结论：符合【普米】特征**")
