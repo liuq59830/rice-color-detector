@@ -2,34 +2,33 @@ import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
+import json
+import os
 
 st.set_page_config(page_title="大米色差智能分析系统", layout="wide")
 st.title("🍚 PVDF膜/大米显色智能分析系统")
 st.markdown("基于 **CIELAB 色彩空间** 与 **CIE76 \(\Delta E\) 色差算法** 的客观量化判别")
 
-# =======================================================
-# 💡 写死的标准色（记得改成你自己测出来的准确值）
-# =======================================================
-STANDARD_XIANGMI = np.array([238, 228, 205]) # 香米 RGB
-STANDARD_PUMI = np.array([223, 211, 185])    # 普米 RGB
+# 记录标准的文件
+CONFIG_FILE = "color_standard.json"
+
+if 'std_colors' not in st.session_state:
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            st.session_state.std_colors = json.load(f)
+    else:
+        st.session_state.std_colors = {"xiang": None, "pu": None}
 
 def rgb_to_lab(rgb):
-    """将 RGB 转换为 Lab 色彩空间（展示用）"""
     rgb_uint8 = np.uint8([[rgb]])
     lab = cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2LAB)[0][0]
-    # OpenCV 的 Lab 范围和标准有点不一样，做个转换方便展示
-    L = lab[0] * 100 / 255
-    a = lab[1] - 128
-    b = lab[2] - 128
-    return L, a, b
+    return lab[0] * 100 / 255, lab[1] - 128, lab[2] - 128
 
 def calculate_color_difference(rgb1, rgb2):
-    """计算 Delta E 色差"""
     rgb1_uint8 = np.uint8([[rgb1]])
     rgb2_uint8 = np.uint8([[rgb2]])
     lab1 = cv2.cvtColor(rgb1_uint8, cv2.COLOR_RGB2LAB)[0][0]
     lab2 = cv2.cvtColor(rgb2_uint8, cv2.COLOR_RGB2LAB)[0][0]
-    
     delta_L = float(lab1[0]) - float(lab2[0])
     delta_a = float(lab1[1]) - float(lab2[1])
     delta_b = float(lab1[2]) - float(lab2[2])
@@ -48,14 +47,61 @@ def get_circular_color(img, center_x, center_y, radius):
     return np.mean(pixels, axis=0)[:3]
 
 # =======================================================
-# 主界面
+# 侧边栏：定标系统
 # =======================================================
-test_file = st.file_uploader("📂 请上传待检测膜的显色照片 (支持 JPG/PNG)", type=["jpg", "jpeg", "png"])
+with st.sidebar:
+    st.header("⚙️ 标准色定标系统")
+    
+    if st.session_state.std_colors["xiang"] is None or st.session_state.std_colors["pu"] is None:
+        st.warning("⚠️ 尚未建立标准色，请先上传标准图并圈选。")
+        
+        std_file = st.file_uploader("上传标准图片", type=["jpg", "jpeg", "png"], key="std_upload")
+        if std_file is not None:
+            std_img = Image.open(std_file)
+            std_array = np.array(std_img)
+            if len(std_array.shape) == 3 and std_array.shape[2] == 4:
+                std_array = cv2.cvtColor(std_array, cv2.COLOR_RGBA2RGB)
+                
+            s_x = st.slider("定标位置 X", 0.0, 1.0, 0.5, 0.01)
+            s_y = st.slider("定标位置 Y", 0.0, 1.0, 0.5, 0.01)
+            s_r = st.slider("定标圆圈半径", 5, 100, 20)
+            
+            sh, sw = std_array.shape[:2]
+            sx, sy = int(sw * s_x), int(sh * s_y)
+            
+            preview_std = std_array.copy()
+            cv2.circle(preview_std, (sx, sy), s_r, (255, 0, 0), 2)
+            st.image(preview_std, caption="红色圆圈为取样位置", use_container_width=True)
+            
+            s_color = get_circular_color(std_array, sx, sy, s_r)
+            
+            if s_color is not None:
+                s_color = s_color.tolist()
+                col1, col2 = st.columns(2)
+                if col1.button("✅ 定为【香米】"):
+                    st.session_state.std_colors["xiang"] = s_color
+                    with open(CONFIG_FILE, 'w') as f: json.dump(st.session_state.std_colors, f)
+                    st.rerun()
+                if col2.button("✅ 定为【普米】"):
+                    st.session_state.std_colors["pu"] = s_color
+                    with open(CONFIG_FILE, 'w') as f: json.dump(st.session_state.std_colors, f)
+                    st.rerun()
+    else:
+        st.success("✅ 标准色已确定！")
+        # 隐藏具体数值，只显示状态
+        if st.button("🔄 重新定标"):
+            if os.path.exists(CONFIG_FILE): os.remove(CONFIG_FILE)
+            st.session_state.std_colors = {"xiang": None, "pu": None}
+            st.rerun()
+
+# =======================================================
+# 主界面：检测部分
+# =======================================================
+test_file = st.file_uploader("📂 请上传待检测膜的显色照片", type=["jpg", "jpeg", "png"])
 
 if test_file is not None:
     test_img = Image.open(test_file)
     test_array = np.array(test_img)
-    
     if len(test_array.shape) == 3 and test_array.shape[2] == 4:
         test_array = cv2.cvtColor(test_array, cv2.COLOR_RGBA2RGB)
     
@@ -71,48 +117,47 @@ if test_file is not None:
         tx, ty = int(tw * t_x), int(th * t_y)
         
         preview = test_array.copy()
-        # 画个带准星的圈，更显专业
         cv2.circle(preview, (tx, ty), t_r, (0, 255, 0), 2)
         cv2.line(preview, (tx-t_r-10, ty), (tx+t_r+10, ty), (0, 255, 0), 1)
         cv2.line(preview, (tx, ty-t_r-10), (tx, ty+t_r+10), (0, 255, 0), 1)
-        
         st.image(preview, caption="图 1. 颜色特征提取区域", use_container_width=True)
 
     with col_result:
         st.write("📊 **智能分析结果**")
-        t_color = get_circular_color(test_array, tx, ty, t_r)
         
-        if t_color is not None:
-            # 核心技术展示：将颜色转为 Lab 空间
-            L, a, b = rgb_to_lab(t_color)
-            
-            st.markdown(f"**1. 样本色彩特征提取 (CIELAB)**")
-            st.info(f"L* (明度): {L:.1f}  |  a* (红绿轴): {a:.1f}  |  b* (黄蓝轴): {b:.1f}")
-            
-            # 计算色差
-            diff_x = calculate_color_difference(t_color, STANDARD_XIANGMI)
-            diff_p = calculate_color_difference(t_color, STANDARD_PUMI)
-            
-            st.markdown(f"**2. 色差比对 (\(\Delta E\))**")
-            st.write(f"与【香米】标准色差 \(\Delta E\) = **{diff_x:.2f}**")
-            st.write(f"与【普米】标准色差 \(\Delta E\) = **{diff_p:.2f}**")
-            
-            # 引入人眼感知等级评价（体现专业度）
-            st.markdown(f"**3. 感知度评估 (基于 \(\Delta E\) 阈值)**")
-            min_diff = min(diff_x, diff_p)
-            if min_diff < 1.0:
-                st.success("视觉感知等级：无明显差异 (极佳匹配)")
-            elif min_diff < 2.0:
-                st.success("视觉感知等级：微小差异 (高置信度匹配)")
-            elif min_diff < 3.5:
-                st.info("视觉感知等级：可察觉差异 (中等置信度)")
-            else:
-                st.warning("视觉感知等级：明显差异 (低置信度，建议重新采样)")
+        if st.session_state.std_colors["xiang"] is None or st.session_state.std_colors["pu"] is None:
+            st.error("❌ 请先在左侧完成标准色的定标！")
+        else:
+            t_color = get_circular_color(test_array, tx, ty, t_r)
+            if t_color is not None:
+                xiang_std = np.array(st.session_state.std_colors["xiang"])
+                pu_std = np.array(st.session_state.std_colors["pu"])
+                
+                L, a, b = rgb_to_lab(t_color)
+                st.markdown(f"**1. 样本色彩特征提取 (CIELAB)**")
+                st.info(f"L* (明度): {L:.1f}  |  a* (红绿轴): {a:.1f}  |  b* (黄蓝轴): {b:.1f}")
+                
+                diff_x = calculate_color_difference(t_color, xiang_std)
+                diff_p = calculate_color_difference(t_color, pu_std)
+                
+                st.markdown(f"**2. 色差比对 (\(\Delta E\))**")
+                st.write(f"与【香米】标准色差 \(\Delta E\) = **{diff_x:.2f}**")
+                st.write(f"与【普米】标准色差 \(\Delta E\) = **{diff_p:.2f}**")
+                
+                st.markdown(f"**3. 感知度评估**")
+                min_diff = min(diff_x, diff_p)
+                if min_diff < 1.0:
+                    st.success("视觉感知等级：无明显差异 (极佳匹配)")
+                elif min_diff < 2.0:
+                    st.success("视觉感知等级：微小差异 (高置信度匹配)")
+                elif min_diff < 3.5:
+                    st.info("视觉感知等级：可察觉差异 (中等置信度)")
+                else:
+                    st.warning("视觉感知等级：明显差异 (低置信度)")
 
-            st.divider()
-            
-            st.markdown(f"**🎯 最终判别结论**")
-            if diff_x < diff_p:
-                st.success(f"该膜显色结果符合【香米】特征 (置信度高出 {diff_p - diff_x:.2f})")
-            else:
-                st.success(f"该膜显色结果符合【普米】特征 (置信度高出 {diff_x - diff_p:.2f})")
+                st.divider()
+                st.markdown(f"**🎯 最终判别结论**")
+                if diff_x < diff_p:
+                    st.success(f"符合【香米】特征")
+                else:
+                    st.success(f"符合【普米】特征")
